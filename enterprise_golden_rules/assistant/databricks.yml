@@ -1,0 +1,26 @@
+# Databricks Asset Bundle for Enterprise Golden Rules deployment
+# Syncs generated rule files to /Workspace/Enterprise_Rules/
+#
+# Usage:
+#   databricks bundle deploy -t dev
+#   databricks bundle deploy -t prod
+
+bundle:
+  name: enterprise-golden-rules
+
+variables:
+  workspace_rules_path:
+    description: "Target path in workspace for rule files"
+    default: "/Workspace/Enterprise_Rules"
+
+sync:
+  paths:
+    - ./generated/Enterprise_Rules
+
+targets:
+  dev:
+    mode: development
+    default: true
+
+  prod:
+    mode: production

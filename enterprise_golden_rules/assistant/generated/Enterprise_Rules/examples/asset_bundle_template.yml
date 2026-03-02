@@ -1,0 +1,351 @@
+# =============================================================================
+# Databricks Asset Bundle Template (databricks.yml)
+# =============================================================================
+#
+# Enterprise Golden Rules Satisfied:
+#   IN-01  : Serverless compute for all jobs
+#   IN-02  : Environment-level dependencies (not task-level)
+#   IN-03  : notebook_task (never python_task)
+#   IN-04  : dbutils.widgets.get() for parameters (base_parameters in YAML)
+#   IN-05  : Hierarchical job architecture (atomic -> composite -> orchestrator)
+#   IN-06  : Each notebook in exactly ONE atomic job
+#   IN-07  : run_job_task for cross-job references
+#   IN-08  : [${bundle.target}] prefix in job name
+#   TG-01  : Required tags: team, cost_center, environment
+#   NC-01  : All names use snake_case
+#
+# INSTRUCTIONS:
+#   1. Copy this file to your project root as databricks.yml
+#   2. Replace all ${...} placeholder variables with your actual values
+#   3. Validate with: databricks bundle validate
+#   4. Deploy with: databricks bundle deploy -t dev
+#   5. Run with: databricks bundle run -t dev <job_name>
+# =============================================================================
+
+bundle:
+  name: "${project_name}_bundle"
+
+# =============================================================================
+# VARIABLES
+# =============================================================================
+# Central variable definitions used across all targets.
+# Referenced in resources as ${var.variable_name}.
+# IN-04: These flow to notebooks via base_parameters -> dbutils.widgets.get()
+
+variables:
+  catalog:
+    description: "Unity Catalog name for this environment"
+    default: "dev_catalog"
+
+  schema:
+    description: "Default schema within the catalog"
+    default: "gold"
+
+  bronze_schema:
+    description: "Bronze layer schema"
+    default: "bronze"
+
+  silver_schema:
+    description: "Silver layer schema"
+    default: "silver"
+
+  gold_schema:
+    description: "Gold layer schema"
+    default: "gold"
+
+  warehouse_id:
+    description: "SQL Warehouse ID for query execution"
+    default: "your_dev_warehouse_id"
+
+  domain:
+    description: "Business domain for this project"
+    default: "sales"
+
+# =============================================================================
+# WORKSPACE CONFIGURATION
+# =============================================================================
+
+workspace:
+  host: ${DATABRICKS_HOST}
+
+# =============================================================================
+# TARGETS (Environment-specific overrides)
+# =============================================================================
+# Each target overrides variables for its environment.
+# Deploy to a specific target: databricks bundle deploy -t <target>
+
+targets:
+  dev:
+    mode: development
+    default: true
+    variables:
+      catalog: "dev_catalog"
+      warehouse_id: "dev_warehouse_id_here"
+
+  staging:
+    mode: development
+    variables:
+      catalog: "staging_catalog"
+      warehouse_id: "staging_warehouse_id_here"
+
+  prod:
+    mode: production
+    variables:
+      catalog: "prod_catalog"
+      warehouse_id: "prod_warehouse_id_here"
+    # Production runs under a service principal
+    run_as:
+      service_principal_name: "your-prod-service-principal"
+
+# =============================================================================
+# RESOURCES
+# =============================================================================
+
+resources:
+
+  # ===========================================================================
+  # LAYER 1: ATOMIC JOBS (each notebook in exactly ONE job -- IN-06)
+  # ===========================================================================
+
+  jobs:
+
+    # -------------------------------------------------------------------------
+    # Atomic Job: Gold Table Setup
+    # -------------------------------------------------------------------------
+    gold_table_setup_job:
+      # IN-08: [${bundle.target}] prefix in job name
+      name: "[${bundle.target}] ${domain} - Setup Gold Tables"
+
+      # IN-01 / IN-02: Serverless environment block at job level
+      environments:
+        - environment_key: "default"
+          spec:
+            environment_version: "4"
+            dependencies:
+              - "pyyaml>=6.0"
+
+      # TG-01: Required tags for cost allocation and governance
+      tags:
+        team: "data-engineering"
+        cost_center: "CC-1234"
+        environment: ${bundle.target}
+        project: "${project_name}"
+        layer: "gold"
+        job_type: "setup"
+        job_level: "atomic"
+
+      tasks:
+        - task_key: create_gold_tables
+          # IN-02: environment_key references the job-level environment
+          environment_key: default
+          # IN-03: MUST use notebook_task (never python_task)
+          notebook_task:
+            notebook_path: ../src/gold/setup_gold_tables.py
+            # IN-04: base_parameters -> dbutils.widgets.get() in notebook
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.gold_schema}
+              domain: ${var.domain}
+
+    # -------------------------------------------------------------------------
+    # Atomic Job: Gold MERGE (incremental update)
+    # -------------------------------------------------------------------------
+    gold_merge_job:
+      name: "[${bundle.target}] ${domain} - Merge Gold Tables"
+
+      environments:
+        - environment_key: "default"
+          spec:
+            environment_version: "4"
+            dependencies:
+              - "pyyaml>=6.0"
+
+      tags:
+        team: "data-engineering"
+        cost_center: "CC-1234"
+        environment: ${bundle.target}
+        project: "${project_name}"
+        layer: "gold"
+        job_type: "merge"
+        job_level: "atomic"
+
+      tasks:
+        - task_key: merge_dimensions
+          environment_key: default
+          notebook_task:
+            notebook_path: ../src/gold/merge_dimensions.py
+            base_parameters:
+              catalog: ${var.catalog}
+              silver_schema: ${var.silver_schema}
+              gold_schema: ${var.gold_schema}
+
+        - task_key: merge_facts
+          environment_key: default
+          # Facts depend on dimensions being updated first (DM-08)
+          depends_on:
+            - task_key: merge_dimensions
+          notebook_task:
+            notebook_path: ../src/gold/merge_facts.py
+            base_parameters:
+              catalog: ${var.catalog}
+              silver_schema: ${var.silver_schema}
+              gold_schema: ${var.gold_schema}
+
+    # -------------------------------------------------------------------------
+    # Atomic Job: TVF Deployment
+    # -------------------------------------------------------------------------
+    tvf_deployment_job:
+      name: "[${bundle.target}] ${domain} - Deploy TVFs"
+
+      environments:
+        - environment_key: "default"
+          spec:
+            environment_version: "4"
+
+      tags:
+        team: "data-engineering"
+        cost_center: "CC-1234"
+        environment: ${bundle.target}
+        project: "${project_name}"
+        layer: "gold"
+        job_type: "setup"
+        job_level: "atomic"
+
+      tasks:
+        - task_key: deploy_tvfs
+          environment_key: default
+          notebook_task:
+            notebook_path: ../src/semantic/deploy_tvfs.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.gold_schema}
+
+    # -------------------------------------------------------------------------
+    # Atomic Job: Metric View Deployment
+    # -------------------------------------------------------------------------
+    metric_view_job:
+      name: "[${bundle.target}] ${domain} - Deploy Metric Views"
+
+      environments:
+        - environment_key: "default"
+          spec:
+            environment_version: "4"
+
+      tags:
+        team: "data-engineering"
+        cost_center: "CC-1234"
+        environment: ${bundle.target}
+        project: "${project_name}"
+        layer: "gold"
+        job_type: "setup"
+        job_level: "atomic"
+
+      tasks:
+        - task_key: deploy_metric_views
+          environment_key: default
+          notebook_task:
+            notebook_path: ../src/semantic/deploy_metric_views.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.gold_schema}
+
+    # =========================================================================
+    # LAYER 2: COMPOSITE JOBS (reference atomic jobs via run_job_task -- IN-07)
+    # =========================================================================
+
+    semantic_layer_setup:
+      name: "[${bundle.target}] ${domain} - Semantic Layer Setup"
+
+      tags:
+        team: "data-engineering"
+        cost_center: "CC-1234"
+        environment: ${bundle.target}
+        project: "${project_name}"
+        job_level: "composite"
+
+      tasks:
+        # IN-07: run_job_task references the atomic job
+        - task_key: deploy_tvfs
+          run_job_task:
+            job_id: ${resources.jobs.tvf_deployment_job.id}
+
+        - task_key: deploy_metric_views
+          depends_on:
+            - task_key: deploy_tvfs
+          run_job_task:
+            job_id: ${resources.jobs.metric_view_job.id}
+
+    gold_data_pipeline:
+      name: "[${bundle.target}] ${domain} - Gold Data Pipeline"
+
+      tags:
+        team: "data-engineering"
+        cost_center: "CC-1234"
+        environment: ${bundle.target}
+        project: "${project_name}"
+        job_level: "composite"
+
+      tasks:
+        - task_key: setup_tables
+          run_job_task:
+            job_id: ${resources.jobs.gold_table_setup_job.id}
+
+        - task_key: merge_data
+          depends_on:
+            - task_key: setup_tables
+          run_job_task:
+            job_id: ${resources.jobs.gold_merge_job.id}
+
+    # =========================================================================
+    # LAYER 3: ORCHESTRATOR (references composites -- IN-05)
+    # =========================================================================
+
+    master_setup:
+      name: "[${bundle.target}] ${domain} - Master Setup Orchestrator"
+
+      tags:
+        team: "data-engineering"
+        cost_center: "CC-1234"
+        environment: ${bundle.target}
+        project: "${project_name}"
+        job_level: "orchestrator"
+
+      tasks:
+        - task_key: gold_pipeline
+          run_job_task:
+            job_id: ${resources.jobs.gold_data_pipeline.id}
+
+        - task_key: semantic_layer
+          depends_on:
+            - task_key: gold_pipeline
+          run_job_task:
+            job_id: ${resources.jobs.semantic_layer_setup.id}
+
+  # ===========================================================================
+  # DLT PIPELINE RESOURCE
+  # ===========================================================================
+
+  pipelines:
+    silver_pipeline:
+      name: "[${bundle.target}] Silver ${domain} Pipeline"
+
+      root_path: ../src/silver_pipeline
+      catalog: ${var.catalog}
+      schema: ${var.silver_schema}
+
+      serverless: true
+      photon: true
+      channel: CURRENT
+      edition: ADVANCED
+
+      libraries:
+        - notebook:
+            path: ../src/silver_pipeline/dlt_pipeline_template.py
+
+      tags:
+        team: "data-engineering"
+        cost_center: "CC-1234"
+        environment: ${bundle.target}
+        project: "${project_name}"
+        layer: "silver"
+        pipeline_type: "streaming"

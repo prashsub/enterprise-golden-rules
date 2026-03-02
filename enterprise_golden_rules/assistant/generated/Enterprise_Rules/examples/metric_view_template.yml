@@ -1,0 +1,319 @@
+# =============================================================================
+# Metric View YAML Template (v1.1)
+# =============================================================================
+#
+# Enterprise Golden Rules Satisfied:
+#   MV-01  : Core metrics MUST be defined in Metric Views
+#   MV-02  : Reference Gold layer tables only
+#   MV-03  : Business context documentation required (structured comment)
+#   MV-04  : Schema validation before creation
+#   MV-05  : No transitive joins (source -> dim only, never dim -> dim)
+#   MV-06  : Synonyms for all dimensions and measures
+#   MV-07  : Display format for all measures
+#   MV-08  : Structured comment format (PURPOSE, BEST FOR, NOT FOR)
+#   CM-02  : COMMENT follows dual-purpose format (business + technical)
+#   NC-01  : All names use snake_case
+#
+# CRITICAL NOTES:
+#   - Name comes from the FILENAME, not from a 'name' field in the YAML
+#   - Do NOT include a 'name' field -- it will cause "Unrecognized field" error
+#   - Do NOT include 'time_dimension' -- unsupported in v1.1
+#   - Do NOT include 'window_measures' -- unsupported in v1.1
+#   - Do NOT include 'join_type' -- unsupported in v1.1
+#   - All joins must be source -> dim (MV-05: no transitive/dim-to-dim joins)
+#
+# INSTRUCTIONS:
+#   1. Save this file as: ${catalog}.${schema}.<metric_view_name>.yml
+#      The filename (minus extension) becomes the Metric View name.
+#   2. Replace ${catalog} and ${schema} variables with your environment values.
+#   3. Verify all column references exist in Gold layer YAML definitions (DA-02).
+#   4. Deploy via Databricks SQL or Asset Bundle.
+#
+# UNSUPPORTED FIELDS (will cause errors):
+#   | Field             | Status       | Action            |
+#   |-------------------|--------------|-------------------|
+#   | name              | Unrecognized | Do NOT include    |
+#   | time_dimension    | Unrecognized | Do NOT include    |
+#   | window_measures   | Unrecognized | Do NOT include    |
+#   | join_type         | Unsupported  | Do NOT include    |
+# =============================================================================
+
+# Version MUST be "1.1" (quoted string)
+version: "1.1"
+
+# MV-08: Structured comment with PURPOSE, BEST FOR, NOT FOR
+# This is critical for Genie and AI/BI discoverability.
+comment: >
+  PURPOSE: Order analytics for revenue reporting, sales performance, and
+  customer purchase behavior analysis.
+
+  BEST FOR: Total revenue by customer | Revenue by product category |
+  Sales trends over time | Average order value | Discount effectiveness |
+  Regional sales comparison
+
+  NOT FOR: Real-time order tracking (use operational dashboard) |
+  Individual order details (use get_order_details TVF) |
+  Inventory management (use inventory_metrics Metric View)
+
+  DIMENSIONS: order_date, customer_name, customer_segment, product_name,
+  product_category, store_name, region
+
+  MEASURES: total_revenue, total_orders, avg_order_value, total_quantity,
+  avg_discount_pct
+
+  SOURCE: fact_orders (${domain} domain)
+
+  JOINS: dim_customer (customer attributes), dim_product (product details),
+  dim_store (location details)
+
+  NOTE: Revenue is based on list prices after discounts. Actual billed
+  amounts may differ based on returns and adjustments.
+
+# =============================================================================
+# SOURCE TABLE (MV-02: Must reference Gold layer only)
+# =============================================================================
+# Use ${catalog}.${schema} variables for environment portability.
+source: ${catalog}.${schema}.fact_orders
+
+# =============================================================================
+# JOINS (MV-05: Source -> Dim ONLY, no transitive joins)
+# =============================================================================
+# CORRECT: source.column = dim.column
+# WRONG:   dim_a.column = dim_b.column (transitive -- will fail!)
+#
+# Note: 'on' MUST be quoted as it is a YAML reserved word.
+
+joins:
+  # Join to customer dimension (source -> dim, not transitive)
+  - name: dim_customer
+    source: ${catalog}.${schema}.dim_customer
+    'on': >
+      source.customer_key = dim_customer.customer_key
+      AND dim_customer.is_current = true
+
+  # Join to product dimension (source -> dim, not transitive)
+  - name: dim_product
+    source: ${catalog}.${schema}.dim_product
+    'on': source.product_key = dim_product.product_key
+
+  # Join to store dimension (source -> dim, not transitive)
+  - name: dim_store
+    source: ${catalog}.${schema}.dim_store
+    'on': source.store_key = dim_store.store_key
+
+# =============================================================================
+# DIMENSIONS (MV-06: Synonyms required for all dimensions)
+# =============================================================================
+# Dimensions define the axes for slicing and dicing measures.
+# Each dimension needs:
+#   - name: snake_case identifier
+#   - expr: Column expression (prefix with source. or join_name.)
+#   - comment: Human-readable description
+#   - display_name: User-friendly label for dashboards
+#   - synonyms: Alternative names for Genie natural language queries
+
+dimensions:
+  # --- Time dimensions ---
+  - name: order_date
+    expr: source.order_date
+    comment: "Date when the order was placed. Primary time dimension for trend analysis."
+    display_name: "Order Date"
+    synonyms:
+      - "date"
+      - "day"
+      - "when"
+      - "order day"
+      - "sale date"
+
+  # --- Customer dimensions (from dim_customer join) ---
+  - name: customer_name
+    expr: dim_customer.customer_name
+    comment: "Full name of the customer who placed the order."
+    display_name: "Customer Name"
+    synonyms:
+      - "customer"
+      - "buyer"
+      - "client"
+      - "who"
+
+  - name: customer_segment
+    expr: dim_customer.customer_segment
+    comment: "Business segment classification of the customer (e.g., Enterprise, SMB, Consumer)."
+    display_name: "Customer Segment"
+    synonyms:
+      - "segment"
+      - "customer type"
+      - "tier"
+      - "classification"
+
+  - name: region
+    expr: dim_customer.region
+    comment: "Geographic region of the customer."
+    display_name: "Region"
+    synonyms:
+      - "geography"
+      - "area"
+      - "location"
+      - "territory"
+
+  # --- Product dimensions (from dim_product join) ---
+  - name: product_name
+    expr: dim_product.product_name
+    comment: "Name of the product ordered."
+    display_name: "Product Name"
+    synonyms:
+      - "product"
+      - "item"
+      - "what"
+
+  - name: product_category
+    expr: dim_product.category
+    comment: "Product category for grouping and analysis."
+    display_name: "Product Category"
+    synonyms:
+      - "category"
+      - "product type"
+      - "product group"
+
+  # --- Store dimensions (from dim_store join) ---
+  - name: store_name
+    expr: dim_store.store_name
+    comment: "Name of the store where the order was placed."
+    display_name: "Store Name"
+    synonyms:
+      - "store"
+      - "location"
+      - "branch"
+      - "outlet"
+
+# =============================================================================
+# MEASURES (MV-07: Display format required for all measures)
+# =============================================================================
+# Measures define the numeric aggregations.
+# Each measure needs:
+#   - name: snake_case identifier
+#   - expr: Aggregation expression (SUM, COUNT, AVG, etc.)
+#   - comment: Human-readable description
+#   - display_name: User-friendly label
+#   - format: Display format (currency, number, percent)
+#   - synonyms: Alternative names for Genie
+
+measures:
+  # --- Revenue measures ---
+  - name: total_revenue
+    expr: SUM(source.total_amount)
+    comment: "Total revenue after discounts in USD. Primary revenue metric."
+    display_name: "Total Revenue"
+    format:
+      type: currency
+      currency_code: USD
+      decimal_places:
+        type: exact
+        places: 2
+      abbreviation: compact
+    synonyms:
+      - "revenue"
+      - "sales"
+      - "total sales"
+      - "income"
+      - "money"
+      - "dollars"
+
+  # --- Order count ---
+  - name: total_orders
+    expr: COUNT(source.order_id)
+    comment: "Total number of orders placed."
+    display_name: "Total Orders"
+    format:
+      type: number
+      decimal_places:
+        type: exact
+        places: 0
+      abbreviation: compact
+    synonyms:
+      - "orders"
+      - "order count"
+      - "number of orders"
+      - "how many orders"
+
+  # --- Average order value ---
+  - name: avg_order_value
+    expr: AVG(source.total_amount)
+    comment: "Average order value in USD. Revenue divided by order count."
+    display_name: "Average Order Value"
+    format:
+      type: currency
+      currency_code: USD
+      decimal_places:
+        type: exact
+        places: 2
+    synonyms:
+      - "AOV"
+      - "average order"
+      - "avg order"
+      - "average sale"
+
+  # --- Quantity measures ---
+  - name: total_quantity
+    expr: SUM(source.quantity)
+    comment: "Total number of units ordered across all line items."
+    display_name: "Total Quantity"
+    format:
+      type: number
+      decimal_places:
+        type: exact
+        places: 0
+      abbreviation: compact
+    synonyms:
+      - "quantity"
+      - "units"
+      - "volume"
+      - "items sold"
+
+  # --- Discount measures ---
+  - name: avg_discount_pct
+    expr: AVG(source.discount_pct)
+    comment: "Average discount percentage applied to orders."
+    display_name: "Average Discount"
+    format:
+      type: percent
+      decimal_places:
+        type: exact
+        places: 1
+    synonyms:
+      - "discount"
+      - "average discount"
+      - "discount rate"
+      - "markdown"
+
+# =============================================================================
+# FILTERS (Optional: Pre-defined filter conditions)
+# =============================================================================
+# Filters provide convenient named conditions users can apply.
+# These are additive (AND logic) when combined.
+
+filters:
+  - name: last_30_days
+    expr: source.order_date >= DATEADD(DAY, -30, CURRENT_DATE())
+    comment: "Filter to orders from the last 30 days."
+    display_name: "Last 30 Days"
+
+  - name: last_90_days
+    expr: source.order_date >= DATEADD(DAY, -90, CURRENT_DATE())
+    comment: "Filter to orders from the last 90 days."
+    display_name: "Last 90 Days"
+
+  - name: current_year
+    expr: YEAR(source.order_date) = YEAR(CURRENT_DATE())
+    comment: "Filter to orders from the current calendar year."
+    display_name: "Current Year"
+
+  - name: enterprise_only
+    expr: dim_customer.customer_segment = 'Enterprise'
+    comment: "Filter to Enterprise segment customers only."
+    display_name: "Enterprise Customers"
+
+  - name: high_value_orders
+    expr: source.total_amount >= 1000
+    comment: "Filter to orders with total amount >= $1,000."
+    display_name: "High Value Orders"
